@@ -13,10 +13,12 @@ torch==2.6.0+cpu
 transformers==4.50.0
 
 # LangChain NL query
+langgraph==1.1.10
 langchain==0.3.21
 langchain-core==0.3.49
 langchain-huggingface==0.1.2
 langchain-google-genai==2.1.2
+
 
 # Settings / validation
 pydantic==2.11.1

@@ -2,11 +2,16 @@
 FastAPI application entry point.
 
 Endpoints:
-    GET  /health       — liveness / dependency health check
-    GET  /search       — structured keyword + filter search
-    POST /nl-search    — natural language search (LLM-powered)
-    GET  /suggest      — autocomplete prefix suggestions
-    POST /index/product — (admin) index a single product
+  GET  /health          — liveness / dependency health check
+  GET  /search          — structured keyword + filter search
+  POST /nl-search       — natural language search (LLM-powered)
+  GET  /suggest         — autocomplete prefix suggestions
+  POST /index/product   — (admin) index a single product
+  POST /chat            — LangGraph multi-turn chatbot
+  POST /cart/session    — create a new UCP checkout session
+  POST /cart/{id}/add   — add a line item to an existing session
+  GET  /cart/{id}       — view a checkout session
+  POST /cart/checkout   — complete checkout and place order
 """
 
 from __future__ import annotations
@@ -14,16 +19,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from opensearchpy import OpenSearch
 from sentence_transformers import SentenceTransformer
 
 from api.middleware import add_middleware
 from api.models import (
+    ChatRequest,
+    ChatResponse,
     HealthResponse,
     NLSearchRequest,
     NLSearchResponse,
@@ -34,13 +42,21 @@ from api.models import (
 )
 from api.nl_query import nl_search
 from api.search import hybrid_search, lexical_search, semantic_search
+from api.chatbot import chat_turn
+from api.cart import (
+    CheckoutSession,
+    Order,
+    create_checkout_session,
+    add_line_item,
+    get_session,
+    complete_checkout,
+)
 import api.dependencies as _deps
 from shared.config.settings import get_settings
 
-
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -266,4 +282,100 @@ async def index_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to index product: {exc}",
         )
+
     return {"result": resp.get("result"), "id": resp.get("_id")}
+
+
+# ── Chatbot ───────────────────────────────────────────────────────────────────
+@app.post("/chat", response_model=ChatResponse, tags=["chat"])
+async def chat(
+    request: ChatRequest,
+    client: OpenSearch = Depends(_deps.get_os_client),
+    model: SentenceTransformer = Depends(_deps.get_model),
+) -> ChatResponse:
+    try:
+        result = await chat_turn(
+            session_id=request.session_id or str(uuid.uuid4()),
+            user_message=request.message,
+            client=client,
+            model=model,
+        )
+    except Exception as exc:
+        logger.exception("Chat error: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat failed: {exc}",
+        )
+    return ChatResponse(**result)
+
+
+# ── UCP Cart / Checkout ───────────────────────────────────────────────────────
+
+class _CreateSessionBody(dict):
+    """Inline body model for POST /cart/session."""
+
+from pydantic import BaseModel as _BM
+
+class CreateSessionRequest(_BM):
+    product_id:  str
+    title:       str
+    price_cents: int
+    quantity:    int = 1
+
+class AddLineItemRequest(_BM):
+    product_id:  str
+    title:       str
+    price_cents: int
+    quantity:    int = 1
+
+class CheckoutRequest(_BM):
+    session_id:    str
+    payment_token: str = "success_token"
+
+
+@app.post("/cart/session", tags=["cart"], summary="Create a new UCP checkout session")
+async def create_session(req: CreateSessionRequest) -> dict:
+    session = create_checkout_session(
+        product_id=req.product_id,
+        title=req.title,
+        price_cents=req.price_cents,
+        quantity=req.quantity,
+    )
+    return session.model_dump()
+
+
+@app.post("/cart/{session_id}/add", tags=["cart"], summary="Add line item to session")
+async def add_item(session_id: str, req: AddLineItemRequest) -> dict:
+    try:
+        session = add_line_item(
+            session_id=session_id,
+            product_id=req.product_id,
+            title=req.title,
+            price_cents=req.price_cents,
+            quantity=req.quantity,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return session.model_dump()
+
+
+@app.get("/cart/{session_id}", tags=["cart"], summary="View a checkout session")
+async def view_session(session_id: str) -> dict:
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return session.model_dump()
+
+
+@app.post("/cart/checkout", tags=["cart"], summary="Complete checkout (UCP mock payment)")
+async def checkout(req: CheckoutRequest) -> dict:
+    try:
+        order = complete_checkout(
+            session_id=req.session_id,
+            payment_token=req.payment_token,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    return order.model_dump()

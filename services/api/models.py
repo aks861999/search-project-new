@@ -7,33 +7,32 @@ as required by the project spec.
 
 from __future__ import annotations
 
+import uuid as _uuid
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 # ── Enumerations ──────────────────────────────────────────────────────────────
 
 class SearchMode(str, Enum):
-    lexical = "lexical"
+    lexical  = "lexical"
     semantic = "semantic"
-    hybrid = "hybrid"
-
+    hybrid   = "hybrid"
 
 # ── Request models ────────────────────────────────────────────────────────────
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    q: str = Field(..., min_length=1, max_length=500, description="Search query text")
-    category: Optional[str] = Field(default=None, description="Filter by main_category")
-    min_price: Optional[float] = Field(default=None, ge=0, description="Minimum price filter")
-    max_price: Optional[float] = Field(default=None, ge=0, description="Maximum price filter")
-    min_rating: Optional[float] = Field(default=None, ge=0, le=5, description="Minimum average_rating")
-    mode: SearchMode = Field(default=SearchMode.hybrid, description="Search strategy")
-    size: int = Field(default=10, ge=1, le=100, description="Number of results to return")
-    from_: int = Field(default=0, ge=0, alias="from", description="Pagination offset")
+    q:          str            = Field(..., min_length=1, max_length=500, description="Search query text")
+    category:   Optional[str]  = Field(default=None, description="Filter by main_category")
+    min_price:  Optional[float]= Field(default=None, ge=0, description="Minimum price filter")
+    max_price:  Optional[float]= Field(default=None, ge=0, description="Maximum price filter")
+    min_rating: Optional[float]= Field(default=None, ge=0, le=5, description="Minimum average_rating")
+    mode:       SearchMode     = Field(default=SearchMode.hybrid, description="Search strategy")
+    size:       int            = Field(default=10, ge=1, le=100, description="Number of results to return")
+    from_:      int            = Field(default=0, ge=0, alias="from", description="Pagination offset")
 
     @field_validator("max_price")
     @classmethod
@@ -47,17 +46,35 @@ class SearchRequest(BaseModel):
 class NLSearchRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    query: str = Field(
-        ..., min_length=3, max_length=1000, description="Natural language search query"
-    )
-    size: int = Field(default=10, ge=1, le=100, description="Number of results to return")
+    query: str = Field(..., min_length=3, max_length=1000, description="Natural language search query")
+    size:  int = Field(default=10, ge=1, le=100, description="Number of results to return")
 
 
 class SuggestRequest(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     prefix: str = Field(..., min_length=1, max_length=100, description="Autocomplete prefix")
-    size: int = Field(default=5, ge=1, le=20, description="Number of suggestions")
+    size:   int = Field(default=5, ge=1, le=20, description="Number of suggestions")
+
+
+# ── NEW: Chat models ──────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    message:    str            = Field(..., min_length=1, max_length=2000, description="User message")
+    session_id: Optional[str]  = Field(
+        default_factory=lambda: str(_uuid.uuid4()),
+        description="Chat session ID — generate once, reuse across turns",
+    )
+
+
+class ChatResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: str
+    reply:      str
+    results:    list[dict] = Field(default_factory=list, description="Search results if a search was triggered")
 
 
 # ── Product document model ────────────────────────────────────────────────────
@@ -65,19 +82,19 @@ class SuggestRequest(BaseModel):
 class ProductHit(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str = Field(..., description="Document ID (parent_asin)")
-    score: float = Field(..., description="Relevance score from OpenSearch")
-    title: str = Field(default="", description="Product title")
-    description: str = Field(default="", description="Product description")
-    features: str = Field(default="", description="Product features")
-    main_category: str = Field(default="", description="Main product category")
-    sub_category: str = Field(default="", description="Sub category")
-    store: str = Field(default="", description="Seller / store name")
-    price: Optional[float] = Field(default=None, description="Product price in USD")
-    average_rating: Optional[float] = Field(default=None, description="Average customer rating")
-    rating_number: Optional[int] = Field(default=None, description="Number of ratings")
-    primary_image_url: str = Field(default="", description="Primary product image URL")
-    parent_asin: str = Field(default="", description="Amazon parent ASIN")
+    id:               str            = Field(..., description="Document ID (parent_asin)")
+    score:            float          = Field(..., description="Relevance score from OpenSearch")
+    title:            str            = Field(default="", description="Product title")
+    description:      str            = Field(default="", description="Product description")
+    features:         str            = Field(default="", description="Product features")
+    main_category:    str            = Field(default="", description="Main product category")
+    sub_category:     str            = Field(default="", description="Sub category")
+    store:            str            = Field(default="", description="Seller / store name")
+    price:            Optional[float]= Field(default=None, description="Product price in USD")
+    average_rating:   Optional[float]= Field(default=None, description="Average customer rating")
+    rating_number:    Optional[int]  = Field(default=None, description="Number of ratings")
+    primary_image_url:str            = Field(default="", description="Primary product image URL")
+    parent_asin:      str            = Field(default="", description="Amazon parent ASIN")
 
     @classmethod
     def from_hit(cls, hit: dict) -> "ProductHit":
@@ -105,37 +122,37 @@ class ProductHit(BaseModel):
 class SearchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    total: int = Field(..., description="Total matching documents")
-    hits: list[ProductHit] = Field(..., description="Result documents")
-    took_ms: int = Field(..., description="OpenSearch query latency in ms")
-    mode: SearchMode = Field(..., description="Search mode used")
-    cached: bool = Field(default=False, description="True if result was served from cache")
+    total:   int           = Field(..., description="Total matching documents")
+    hits:    list[ProductHit] = Field(..., description="Result documents")
+    took_ms: int           = Field(..., description="OpenSearch query latency in ms")
+    mode:    SearchMode    = Field(..., description="Search mode used")
+    cached:  bool          = Field(default=False, description="True if result was served from cache")
 
 
 class NLSearchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    total: int
-    hits: list[ProductHit]
-    took_ms: int
+    total:        int
+    hits:         list[ProductHit]
+    took_ms:      int
     parsed_query: "ParsedNLQuery"
-    cached: bool = False
+    cached:       bool = False
 
 
 class SuggestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     suggestions: list[str] = Field(..., description="Autocomplete suggestions")
-    prefix: str
+    prefix:      str
 
 
 class HealthResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    status: str
-    opensearch: str
-    redis: str
-    version: str = "1.0.0"
+    status:    str
+    opensearch:str
+    redis:     str
+    version:   str = "1.0.0"
 
 
 # ── NL query parsed structure ─────────────────────────────────────────────────
@@ -143,19 +160,19 @@ class HealthResponse(BaseModel):
 class ParsedNLQuery(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    semantic_query: str = Field(default="", description="Extracted semantic search string")
-    filters: "NLFilters" = Field(default_factory=lambda: NLFilters())
-    boost_terms: list[str] = Field(default_factory=list)
-    search_mode: SearchMode = Field(default=SearchMode.hybrid)
+    semantic_query: str            = Field(default="", description="Extracted semantic search string")
+    filters:        "NLFilters"    = Field(default_factory=lambda: NLFilters())
+    boost_terms:    list[str]      = Field(default_factory=list)
+    search_mode:    SearchMode     = Field(default=SearchMode.hybrid)
 
 
 class NLFilters(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    main_category: Optional[str] = None
-    price_min: Optional[float] = None
-    price_max: Optional[float] = None
-    rating_min: Optional[float] = None
+    main_category: Optional[str]   = None
+    price_min:     Optional[float] = None
+    price_max:     Optional[float] = None
+    rating_min:    Optional[float] = None
 
 
 # ── Update forward refs ───────────────────────────────────────────────────────
