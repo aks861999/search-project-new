@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff==0.9.10
+
+      - name: Run ruff
+        run: ruff check api/ ingestion/ config/ tests/ scripts/
+
+  # ── Unit tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pytest==8.3.5 \
+            pytest-asyncio==0.25.3 \
+            pytest-cov==6.1.0 \
+            fastapi==0.115.12 \
+            httpx==0.28.1 \
+            opensearch-py==2.8.0 \
+            pydantic==2.11.1 \
+            pydantic-settings==2.8.1 \
+            redis==5.2.1 \
+            langchain==0.3.21 \
+            langchain-core==0.3.47 \
+            uvicorn==0.34.0 \
+            numpy==2.2.4
+
+      - name: Run tests with coverage
+        run: |
+          PYTHONPATH=services:. pytest tests/ -v \
+            --cov=api --cov=ingestion --cov=mlops --cov=shared \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Docker build smoke ───────────────────────────────────────────────────────
+  docker-build:
+    name: Docker build (api + ingestion)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/api/Dockerfile
+          push: false
+          # Skip model download layer in CI (uses --build-arg to disable it)
+          build-args: |
+            SKIP_MODEL_DOWNLOAD=1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Ingestion image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/ingestion/Dockerfile
+          push: false
+          build-args: |
+            SKIP_MODEL_DOWNLOAD=1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
