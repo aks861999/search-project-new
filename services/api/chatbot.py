@@ -13,6 +13,7 @@ from sentence_transformers import SentenceTransformer
 from api.search import hybrid_search
 from api.cart import create_checkout_session, complete_checkout
 from shared.config.settings import get_settings
+import api.dependencies as deps
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -20,10 +21,10 @@ settings = get_settings()
 
 # ── State ──────────────────────────────────────────────────────────────────────
 class ChatState(TypedDict):
-    messages:     Annotated[list, add_messages]
-    session_id:   str
+    messages: Annotated[list, add_messages]
+    session_id: str
     last_results: list[dict]   # products from last search, kept for follow-ups
-    last_query:   Optional[str]
+    last_query: Optional[str]
 
 
 # ── In-memory session store (replace with Redis for production) ────────────────
@@ -40,32 +41,66 @@ def _get_llm() -> ChatGoogleGenerativeAI:
 
 
 SYSTEM_PROMPT = """You are a helpful Würth product search assistant.
-You help users find products, compare items, and complete purchases.
+You have access to three tools:
+- **search_products**: call this for ANY request to find, get, show, recommend,
+  or browse products — including phrases like "get me X", "any good Y", "I need Z",
+  "something for winter", "show me cream", etc.
+- **ucp_add_to_cart**: call this when a user wants to add a specific product to their cart.
+- **ucp_checkout**: call this when the user wants to pay or complete their order.
 
-You have access to two tools:
-- ucp_add_to_cart: call this when a user wants to add a specific product to their cart.
-- ucp_checkout:    call this when the user wants to pay / complete their order.
+Always call search_products first whenever the user expresses any product need.
+When presenting results, list them clearly and ask if the user wants to add any to their cart.
+When a user says "add the first one" or "buy it", call ucp_add_to_cart with the correct details.
+Keep responses concise and product-focused.
 
-When a user asks to search for products, present the results clearly and ask if they
-want to add any to their cart. When a user says things like "add the first one" or
-"buy it", call ucp_add_to_cart with the correct product details.
-Keep responses concise and product-focused."""
+If the price shows as N/A or is unknown, pass price_cents=0.
+Never refuse to add due to a missing price; use price_cents=0 as a placeholder.
 
-SEARCH_KEYWORDS = frozenset([
-    "find", "search", "show", "looking for",
-    "need", "want", "buy", "suggest", "recommend",
-])
+"""
 
 
-# ── UCP Tools ─────────────────────────────────────────────────────────────────
+# ── Tools — ALL defined at module level, NEVER redefined inside a function ─────
+
 @tool
-def ucp_add_to_cart(product_id: str, title: str, price_cents: int) -> str:
+async def search_products(query: str) -> str:
+    """Search the product catalogue using natural language. Call this whenever the
+    user wants to find, get, show, browse, discover, or get recommendations for
+    any product — including casual phrases like 'get me X' or 'something for Y'."""
+
+    client = deps.get_os_client()   # calls the existing getter function
+    model  = deps.get_model() 
+    if client is None or model is None:
+        return "Search is temporarily unavailable."
+    try:
+        vector = await asyncio.to_thread(
+            lambda: model.encode(query, normalize_embeddings=True).tolist()
+        )
+        result = await hybrid_search(
+            client=client,
+            query=query,
+            query_vector=vector,
+            index_name=settings.index_name,
+            size=5,
+        )
+        if not result.hits:
+            return "No products found for that query."
+        rows = "\n".join(
+            f"{i+1}. [{h.id}] {h.title} — €{h.price or 'N/A'} ★{h.average_rating or 'N/A'}"
+            for i, h in enumerate(result.hits)
+        )
+        return rows
+    except Exception as exc:
+        logger.warning("search_products tool error: %s", exc)
+        return "Search failed, please try again."
+
+
+@tool
+def ucp_add_to_cart(product_id: str, title: str, price_cents: int = 0) -> str:
     """Add a product to a UCP checkout session.
     price_cents is the price in cents (e.g. 1999 = €19.99).
     """
     session = create_checkout_session(product_id, title, price_cents)
     total = sum(li.item.price * li.quantity for li in session.line_items) / 100
-
     return (
         f"✅ Added '{title}' to cart.\n"
         f"UCP Session ID: {session.id}\n"
@@ -85,7 +120,8 @@ def ucp_checkout(session_id: str) -> str:
     )
 
 
-TOOLS = [ucp_add_to_cart, ucp_checkout]
+# Single module-level registry — never reassigned inside any function
+TOOLS = [search_products, ucp_add_to_cart, ucp_checkout]
 _tool_node = ToolNode(TOOLS)
 
 
@@ -95,67 +131,19 @@ async def chat_node(
     client: OpenSearch,
     model: SentenceTransformer,
 ) -> ChatState:
-    llm = _get_llm().bind_tools(TOOLS)
+    llm = _get_llm().bind_tools(TOOLS)   # TOOLS is unambiguously module-level
 
-    # Most recent human message
-    last_human = next(
-        (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
-        "",
-    )
-
-    search_results = list(state.get("last_results", []))
-    extra_context: list = []
-
-    # ── Auto-trigger hybrid search on intent keywords ──────────────────────────
-    if any(kw in last_human.lower() for kw in SEARCH_KEYWORDS):
-        try:
-            vector = await asyncio.to_thread(
-                lambda: model.encode(last_human, normalize_embeddings=True).tolist()
-            )
-            result = await hybrid_search(
-                client=client,
-                query=last_human,
-                query_vector=vector,
-                index_name=settings.index_name,
-                size=5,
-            )
-            search_results = [h.model_dump() for h in result.hits]
-
-            if search_results:
-                rows = "\n".join(
-                    f"{i+1}. [{h['id']}] {h['title']} "
-                    f"— €{h['price'] or 'N/A'} "
-                    f"(⭐ {h['average_rating'] or 'N/A'})"
-                    for i, h in enumerate(search_results)
-                )
-                # Inject search results as a system context message (not shown to user)
-                extra_context = [
-                    HumanMessage(
-                        content=(
-                            f"[SYSTEM: search results for «{last_human}»]\n"
-                            f"{rows}\n"
-                            f"Present these results to the user and ask if they want "
-                            f"to add any to their cart. Use the product id and title "
-                            f"when calling ucp_add_to_cart."
-                        )
-                    )
-                ]
-        except Exception as exc:
-            logger.warning("Hybrid search failed inside chatbot: %s", exc)
-
-    # ── Invoke LLM ────────────────────────────────────────────────────────────
     full_messages = (
         [SystemMessage(content=SYSTEM_PROMPT)]
         + list(state["messages"])
-        + extra_context
     )
     response = await asyncio.to_thread(llm.invoke, full_messages)
 
     return {
         **state,
-        "messages": [response],                       # add_messages appends automatically
-        "last_results": search_results,
-        "last_query": last_human if search_results else state.get("last_query"),
+        "messages": [response],          # add_messages appends automatically
+        "last_results": list(state.get("last_results", [])),
+        "last_query": state.get("last_query"),
     }
 
 
@@ -177,9 +165,10 @@ def _build_graph(client: OpenSearch, model: SentenceTransformer):
 
     g.set_entry_point("chat")
     g.add_conditional_edges("chat", _route, {"tools": "tools", "end": END})
-    g.add_edge("tools", "chat")   # after tool execution → back to chat to process result
+    g.add_edge("tools", "chat")   # after tool execution → back to chat
 
     return g.compile()
+
 
 def _extract_text(content) -> str:
     """Normalize AIMessage content — handles both str and list-of-parts (Gemini 2.5)."""
@@ -192,6 +181,7 @@ def _extract_text(content) -> str:
             if not (isinstance(part, dict) and part.get("type") == "tool_use")
         )
     return str(content)
+
 
 # ── Public API called by api/main.py ──────────────────────────────────────────
 async def chat_turn(
@@ -206,10 +196,10 @@ async def chat_turn(
     """
     if session_id not in _sessions:
         _sessions[session_id] = {
-            "messages":     [],
-            "session_id":   session_id,
+            "messages": [],
+            "session_id": session_id,
             "last_results": [],
-            "last_query":   None,
+            "last_query": None,
         }
 
     # Append new human message to existing history
@@ -223,24 +213,15 @@ async def chat_turn(
     # Pick the last non-tool-call AI message as the visible reply
     last_ai_text = next(
         (
-            m.content
+            _extract_text(m.content)
             for m in reversed(new_state["messages"])
             if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None)
         ),
         "",
     )
 
-
-
-    # AFTER
-    last_ai_text = next(
-        (_extract_text(m.content) for m in reversed(new_state["messages"])
-        if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None)),
-        "",
-    )
-
     return {
         "session_id": session_id,
-        "reply":      last_ai_text,
-        "results":    new_state.get("last_results", []),
+        "reply": last_ai_text,
+        "results": new_state.get("last_results", []),
     }
