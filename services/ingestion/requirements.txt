@@ -10,7 +10,8 @@ opensearch-py==2.8.0
 
 # Embedding model
 sentence-transformers==3.4.1
-torch==2.6.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0+cpu
 transformers==4.50.0
 
 # Settings

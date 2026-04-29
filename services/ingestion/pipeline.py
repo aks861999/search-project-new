@@ -213,16 +213,17 @@ def wait_for_opensearch(client: OpenSearch, retries: int = 20, delay: float = 5.
     logger.info("Waiting for OpenSearch to be ready...")
     for attempt in range(1, retries + 1):
         try:
-            health = client.cluster.health(wait_for_status="yellow", timeout="10s")
-            logger.info(
-                "OpenSearch is ready (status=%s).", health.get("status", "unknown")
-            )
-            return
+            health = client.cluster.health(request_timeout=10)  # no timeout param
+            status = health.get("status", "unknown")
+            if status in ("yellow", "green"):
+                logger.info("OpenSearch is ready (status: %s).", status)
+                return
+            logger.warning("Cluster status is '%s', retrying...", status)
         except Exception as exc:
             logger.warning("Attempt %d/%d failed: %s", attempt, retries, exc)
-            time.sleep(delay)
+            if attempt < retries:
+                time.sleep(delay)
     raise RuntimeError("OpenSearch did not become ready in time.")
-
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 

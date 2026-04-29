@@ -35,7 +35,8 @@ from api.models import (
 from api.nl_query import nl_search
 from api.search import hybrid_search, lexical_search, semantic_search
 import api.dependencies as _deps
-from config.settings import get_settings
+from shared.config.settings import get_settings
+
 
 logging.basicConfig(
     level=logging.INFO,
