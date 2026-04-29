@@ -181,6 +181,17 @@ def _build_graph(client: OpenSearch, model: SentenceTransformer):
 
     return g.compile()
 
+def _extract_text(content) -> str:
+    """Normalize AIMessage content — handles both str and list-of-parts (Gemini 2.5)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+            if not (isinstance(part, dict) and part.get("type") == "tool_use")
+        )
+    return str(content)
 
 # ── Public API called by api/main.py ──────────────────────────────────────────
 async def chat_turn(
@@ -216,6 +227,15 @@ async def chat_turn(
             for m in reversed(new_state["messages"])
             if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None)
         ),
+        "",
+    )
+
+
+
+    # AFTER
+    last_ai_text = next(
+        (_extract_text(m.content) for m in reversed(new_state["messages"])
+        if isinstance(m, AIMessage) and not getattr(m, "tool_calls", None)),
         "",
     )
 

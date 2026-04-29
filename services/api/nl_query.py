@@ -33,17 +33,17 @@ SYSTEM_PROMPT = """You are a product search query parser for an e-commerce platf
 Your task is to extract structured search parameters from the user's natural language query.
 
 Output ONLY valid JSON matching this exact schema — no markdown, no explanation:
-{
+{{
   "semantic_query": "<string: the core product description to search for>",
-  "filters": {
+  "filters": {{
     "main_category": "<string or null>",
     "price_min": <number or null>,
     "price_max": <number or null>,
     "rating_min": <number or null>
-  },
+  }},
   "boost_terms": ["<keyword1>", "<keyword2>"],
   "search_mode": "hybrid"
-}
+}}
 
 Rules:
 - semantic_query must be a clean, descriptive phrase (not the raw user input)

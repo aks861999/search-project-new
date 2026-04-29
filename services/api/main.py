@@ -15,7 +15,7 @@ Endpoints:
 """
 
 from __future__ import annotations
-
+from pydantic import BaseModel as _BM
 import asyncio
 import logging
 import time
@@ -306,6 +306,10 @@ async def chat(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat failed: {exc}",
         )
+    reply = result.get("reply", "")
+    if isinstance(reply, list):
+        reply = " ".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in reply)
+    result["reply"] = reply
     return ChatResponse(**result)
 
 
@@ -314,7 +318,6 @@ async def chat(
 class _CreateSessionBody(dict):
     """Inline body model for POST /cart/session."""
 
-from pydantic import BaseModel as _BM
 
 class CreateSessionRequest(_BM):
     product_id:  str

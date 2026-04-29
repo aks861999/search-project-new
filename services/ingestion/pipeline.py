@@ -18,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Generator, Iterator
+from xmlrpc import client
 
 # Allow running from repo root without installing the package
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root → finds shared/
@@ -193,19 +194,14 @@ def ensure_index(client: OpenSearch, index_name: str) -> None:
 
 def ensure_search_pipeline(client: OpenSearch) -> None:
     """Register the hybrid search pipeline if absent."""
+    # NEW — opensearch-py 3.x compatible
     try:
-        client.transport.perform_request(
-            "GET", f"/_search/pipeline/{HYBRID_PIPELINE_ID}"
-        )
-        logger.info("Search pipeline '%s' already registered.", HYBRID_PIPELINE_ID)
+        client.http.get(f"/_search/pipeline/{HYBRID_PIPELINE_ID}")
     except Exception:
-        logger.info("Registering search pipeline '%s'...", HYBRID_PIPELINE_ID)
-        client.transport.perform_request(
-            "PUT",
+        client.http.put(
             f"/_search/pipeline/{HYBRID_PIPELINE_ID}",
             body=HYBRID_SEARCH_PIPELINE,
         )
-        logger.info("Search pipeline registered.")
 
 
 def wait_for_opensearch(client: OpenSearch, retries: int = 20, delay: float = 5.0) -> None:
