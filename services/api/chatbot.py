@@ -64,7 +64,8 @@ def ucp_add_to_cart(product_id: str, title: str, price_cents: int) -> str:
     price_cents is the price in cents (e.g. 1999 = €19.99).
     """
     session = create_checkout_session(product_id, title, price_cents)
-    total = sum(li.item["price"] * li.quantity for li in session.line_items) / 100
+    total = sum(li.item.price * li.quantity for li in session.line_items) / 100
+
     return (
         f"✅ Added '{title}' to cart.\n"
         f"UCP Session ID: {session.id}\n"
